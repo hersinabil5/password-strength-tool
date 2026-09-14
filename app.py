@@ -67,6 +67,12 @@ def load_user(user_id):
 
 
 def check_pwned(password):
+    """
+    Checks the password against the HaveIBeenPwned breach database
+    using the k-anonymity model: only the first 5 characters of the
+    SHA-1 hash are sent, never the password or full hash.
+    Returns the number of times it's appeared in breaches (0 = not found).
+    """
     sha1 = hashlib.sha1(password.encode('utf-8')).hexdigest().upper()
     prefix, suffix = sha1[:5], sha1[5:]
 
@@ -76,7 +82,7 @@ def check_pwned(password):
             timeout=3
         )
         if response.status_code != 200:
-            return None
+            return None  # API unavailable, fail gracefully
 
         for line in response.text.splitlines():
             hash_suffix, count = line.split(':')
@@ -84,11 +90,22 @@ def check_pwned(password):
                 return int(count)
         return 0
     except requests.RequestException:
-        return None
+        return None  # network error, don't block the user
 
 
 def score_password(password):
+    """
+    Uses zxcvbn (Dropbox's password strength estimator) instead of
+    simple regex rules. zxcvbn models real attacker strategies:
+    dictionary words, l33t-speak substitutions, keyboard patterns,
+    dates, and common password structures.
+    """
+    if not password:
+        return 0, ["Password cannot be empty."], False
+
     result = zxcvbn(password)
+
+    # zxcvbn scores 0-4; convert to a 0-100 scale to match your existing frontend
     score = int(result['score'] * 25)
 
     feedback = []
@@ -102,6 +119,7 @@ def score_password(password):
     if not feedback:
         feedback.append("This is a strong password.")
 
+    # Check against real breach data
     pwned_count = check_pwned(password)
     is_pwned = False
     if pwned_count is not None and pwned_count > 0:
