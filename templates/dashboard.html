@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 60px auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+        nav { margin-bottom: 30px; }
+        nav a { margin-right: 15px; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="{{ url_for('home') }}">Checker</a>
+        <a href="{{ url_for('logout') }}">Logout</a>
+    </nav>
+
+    <h1>Your Check History</h1>
+
+    {% if checks %}
+        <table>
+            <tr><th>Score</th><th>Feedback</th><th>When</th></tr>
+            {% for c in checks %}
+            <tr>
+                <td>{{ c.score }}</td>
+                <td>{{ c.feedback | join(', ') }}</td>
+                <td>{{ c.created_at.strftime('%b %d, %Y %I:%M %p') }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No checks yet — go analyze a password!</p>
+    {% endif %}
+</body>
+</html>

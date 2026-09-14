@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Password Strength Analyzer</title>
+    <style>
+        body { font-family: sans-serif; max-width: 500px; margin: 60px auto; }
+        input[type="password"], input[type="text"] { width: 100%; padding: 10px; font-size: 16px; box-sizing: border-box; }
+        #bar-container { background: #eee; height: 20px; border-radius: 10px; margin-top: 10px; overflow: hidden; }
+        #bar { height: 100%; width: 0%; background: red; transition: width 0.3s, background 0.3s; }
+        #score-text { font-weight: bold; margin-top: 8px; }
+        ul { padding-left: 20px; }
+        nav { margin-bottom: 30px; }
+        nav a { margin-right: 15px; }
+    </style>
+</head>
+<body>
+    <nav>
+        {% if current_user.is_authenticated %}
+            Logged in as {{ current_user.username }} —
+            <a href="{{ url_for('dashboard') }}">Dashboard</a>
+            <a href="{{ url_for('logout') }}">Logout</a>
+        {% else %}
+            <a href="{{ url_for('login') }}">Login</a>
+            <a href="{{ url_for('register') }}">Register</a>
+        {% endif %}
+    </nav>
+
+    <h1>Password Strength Analyzer</h1>
+    <input type="password" id="password" placeholder="Type a password...">
+
+    <div id="bar-container">
+        <div id="bar"></div>
+    </div>
+    <div id="score-text"></div>
+    <ul id="feedback"></ul>
+
+    {% if not current_user.is_authenticated %}
+        <p><em>Log in to save your check history.</em></p>
+    {% endif %}
+
+    <script>
+        const input = document.getElementById('password');
+        const bar = document.getElementById('bar');
+        const scoreText = document.getElementById('score-text');
+        const feedbackList = document.getElementById('feedback');
+        let debounceTimer;
+
+        input.addEventListener('input', () => {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(checkPassword, 300);
+        });
+
+        async function checkPassword() {
+            const password = input.value;
+            if (!password) {
+                bar.style.width = '0%';
+                scoreText.textContent = '';
+                feedbackList.innerHTML = '';
+                return;
+            }
+
+            const response = await fetch('/check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password })
+            });
+            const data = await response.json();
+
+            bar.style.width = data.score + '%';
+            bar.style.background = data.score >= 70 ? 'green' : data.score >= 40 ? 'orange' : 'red';
+            scoreText.textContent = 'Score: ' + data.score + '/100';
+
+            feedbackList.innerHTML = '';
+            data.feedback.forEach(item => {
+                const li = document.createElement('li');
+                li.textContent = item;
+                feedbackList.appendChild(li);
+            });
+        }
+    </script>
+</body>
+</html>
