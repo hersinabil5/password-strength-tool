@@ -1,20 +1,49 @@
+import os
+import re
+import json
+import hashlib
+import requests
+from datetime import datetime
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_wtf import FlaskForm
+from flask_wtf.csrf import CSRFProtect
+from wtforms import StringField, PasswordField
+from wtforms.validators import DataRequired
 from werkzeug.security import generate_password_hash, check_password_hash
-import re
-import json
-from datetime import datetime
+from zxcvbn import zxcvbn
+
+load_dotenv()
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'change-this-to-something-random-later'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-fallback-key-change-me')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
 db = SQLAlchemy(app)
 
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
-COMMON_PASSWORDS = {"password", "123456", "qwerty", "letmein", "admin", "welcome"}
+csrf = CSRFProtect(app)
+
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["200 per day", "50 per hour"]
+)
+
+
+class LoginForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired()])
+    password = PasswordField('Password', validators=[DataRequired()])
+
+
+class RegisterForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired()])
+    password = PasswordField('Password', validators=[DataRequired()])
 
 
 class User(UserMixin, db.Model):
@@ -27,7 +56,8 @@ class Check(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     score = db.Column(db.Integer, nullable=False)
-    feedback = db.Column(db.Text, nullable=False)  # stored as JSON string
+    feedback = db.Column(db.Text, nullable=False)
+    pwned = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -36,47 +66,50 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 
+def check_pwned(password):
+    sha1 = hashlib.sha1(password.encode('utf-8')).hexdigest().upper()
+    prefix, suffix = sha1[:5], sha1[5:]
+
+    try:
+        response = requests.get(
+            f'https://api.pwnedpasswords.com/range/{prefix}',
+            timeout=3
+        )
+        if response.status_code != 200:
+            return None
+
+        for line in response.text.splitlines():
+            hash_suffix, count = line.split(':')
+            if hash_suffix == suffix:
+                return int(count)
+        return 0
+    except requests.RequestException:
+        return None
+
+
 def score_password(password):
-    score = 0
+    result = zxcvbn(password)
+    score = int(result['score'] * 25)
+
     feedback = []
+    warning = result['feedback'].get('warning')
+    suggestions = result['feedback'].get('suggestions', [])
 
-    if len(password) >= 12:
-        score += 25
-    elif len(password) >= 9:
-        score += 15
-    else:
-        feedback.append("Use at least 9 characters, ideally 12+")
+    if warning:
+        feedback.append(warning)
+    feedback.extend(suggestions)
 
-    if re.search(r'[a-z]', password):
-        score += 10
-    else:
-        feedback.append("Add a lowercase letter.")
+    if not feedback:
+        feedback.append("This is a strong password.")
 
-    if re.search(r'[A-Z]', password):
-        score += 10
-    else:
-        feedback.append("Add an uppercase letter.")
-
-    if re.search(r'\d', password):
-        score += 10
-    else:
-        feedback.append("Add a number.")
-
-    if re.search(r'[^A-Za-z0-9]', password):
-        score += 15
-    else:
-        feedback.append("Add a special character.")
-
-    if password.lower() in COMMON_PASSWORDS:
+    pwned_count = check_pwned(password)
+    is_pwned = False
+    if pwned_count is not None and pwned_count > 0:
+        is_pwned = True
         score = min(score, 20)
-        feedback.append("This is a commonly used password - avoid it.")
+        feedback.insert(0, f"This password has appeared in {pwned_count:,} known data breaches — do not use it.")
 
-    if re.search(r'(.)\1{2,}', password):
-        score -= 10
-        feedback.append("Avoid repeated characters (e.g. 'aaa').")
-
-    score = max(0, min(100, score))
-    return score, feedback
+    return score, feedback, is_pwned
 
 
 @app.route('/')
@@ -85,35 +118,33 @@ def home():
 
 
 @app.route('/check', methods=['POST'])
-def check_password():
+def check_password_route():
     data = request.get_json()
     password = data.get('password', '') if data else ''
     if not password:
         return jsonify({"error": "No password provided"}), 400
 
-    score, feedback = score_password(password)
+    score, feedback, is_pwned = score_password(password)
 
     if current_user.is_authenticated:
         new_check = Check(
             user_id=current_user.id,
             score=score,
-            feedback=json.dumps(feedback)
+            feedback=json.dumps(feedback),
+            pwned=is_pwned
         )
         db.session.add(new_check)
         db.session.commit()
 
-    return jsonify({"score": score, "feedback": feedback})
+    return jsonify({"score": score, "feedback": feedback, "pwned": is_pwned})
 
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '')
-
-        if not username or not password:
-            flash('Username and password are required.')
-            return redirect(url_for('register'))
+    form = RegisterForm()
+    if form.validate_on_submit():
+        username = form.username.data.strip()
+        password = form.password.data
 
         if User.query.filter_by(username=username).first():
             flash('That username is already taken.')
@@ -129,14 +160,16 @@ def register():
         login_user(new_user)
         return redirect(url_for('home'))
 
-    return render_template('register.html')
+    return render_template('register.html', form=form)
 
 
 @app.route('/login', methods=['GET', 'POST'])
+@limiter.limit("5 per minute")
 def login():
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '')
+    form = LoginForm()
+    if form.validate_on_submit():
+        username = form.username.data.strip()
+        password = form.password.data
 
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password_hash, password):
@@ -146,7 +179,7 @@ def login():
         flash('Invalid username or password.')
         return redirect(url_for('login'))
 
-    return render_template('login.html')
+    return render_template('login.html', form=form)
 
 
 @app.route('/logout')
@@ -161,7 +194,7 @@ def logout():
 def dashboard():
     checks = Check.query.filter_by(user_id=current_user.id).order_by(Check.created_at.desc()).all()
     parsed_checks = [
-        {"score": c.score, "feedback": json.loads(c.feedback), "created_at": c.created_at}
+        {"score": c.score, "feedback": json.loads(c.feedback), "pwned": c.pwned, "created_at": c.created_at}
         for c in checks
     ]
     return render_template('dashboard.html', checks=parsed_checks)

@@ -22,11 +22,12 @@
         {% endif %}
     {% endwith %}
 
-    <form method="POST">
-        <input type="text" name="username" placeholder="Username" required>
-        <input type="password" name="password" placeholder="Password" required>
-        <button type="submit">Create Account</button>
-    </form>
+<form method="POST">
+    {{ form.hidden_tag() }}
+    {{ form.username(placeholder="Username", required=True) }}
+    {{ form.password(placeholder="Password", required=True) }}
+    <button type="submit">Create Account</button>
+</form>
 
     <p>Already have an account? <a href="{{ url_for('login') }}">Login here</a></p>
 </body>
